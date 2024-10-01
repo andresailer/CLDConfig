@@ -121,7 +121,7 @@ def getMomentum(theTS, basename):
         return None, None, charge
 
     factor = 3e-4  #
-    momentum = factor * bfield / omega * sqrt(1 + tanlambda*tanlambda)
+    momentum = factor * bfield / abs(omega) * sqrt(1 + tanlambda*tanlambda)
 
     # correct for the lorentz boost, pxp only
     pxp = momentum * cos(phi0) * sin(theta)
