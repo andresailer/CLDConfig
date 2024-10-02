@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from tqdm import tqdm
 import sys
 from math import sqrt, sin, cos, tan, atan, acos, pi
 from podio import root_io
@@ -57,27 +58,45 @@ def getHisto(aFile, basename, maxEvents=10000, nBins=100, pMax=50, pGen=40.0):
     """Plot the momentum of the file of SiTracks_Refitted"""
 
     reader = root_io.Reader(aFile)
-    isProd = "prod" in aFile
+    isProd = "prod" in aFile or "fullsim" in aFile
 
     axisTitles = ";(p_{Rec}-p_{Gen})/p_{Gen};Entries"
     hMom = ROOT.TH1D(f"{basename}_momentum", axisTitles, nBins, -2.0/pGen, 2.0/pGen)
     hMom.SetTitle(basename)
 
-    axisTitles = ";#theta_{Rec} [deg];Entries"
-    hTheta = ROOT.TH1D(f"{basename}_theta", axisTitles, nBins, -0.1, 0.1)
+    axisTitles = ";#theta_{Rec}-#theta_{Gen} [deg];Entries"
+    tMax = 0.1
+    hTheta = ROOT.TH1D(f"{basename}_theta", axisTitles, nBins, -tMax, tMax)
+    htp = ROOT.TH1D(f"{basename}_thetaP",   axisTitles, nBins, -tMax, tMax)
+    htm = ROOT.TH1D(f"{basename}_thetaM",   axisTitles, nBins, -tMax, tMax)
     hTheta.SetTitle(basename)
+    htp.SetTitle("Mu+")
+    htm.SetTitle("Mu-")
 
     axisTitles = ";p_{Rec};Entries"
-    hMinus = ROOT.TH1D(f"prod_momentum_mu-", axisTitles, 200, 0.0, 100.0)
+    hMinus = ROOT.TH1D(f"prod_momentum_mu-", axisTitles, nBins, -2.0/pGen, 2.0/pGen)
     hMinus.SetTitle("Prod mu-")
-    hPlus = ROOT.TH1D(f"prod_momentum_mu+", axisTitles, 200, 0.0, 100.0)
+    hPlus = ROOT.TH1D(f"prod_momentum_mu+", axisTitles, nBins, -2.0/pGen, 2.0/pGen)
     hPlus.SetTitle("Prod mu+")
     
     counter = 0
-    for event in reader.get("events"):
+    for event in tqdm(reader.get("events")):
         counter += 1
         if counter > maxEvents:
             break
+        mcparticles = event.get("MCParticles")
+        theMCPs = {}
+        for mcp in mcparticles:
+          if abs(mcp.getPDG()) == 13 and mcp.getGeneratorStatus() == 1:
+              theMCP = mcp
+              mom = theMCP.getMomentum()
+              pGen = sqrt(mom.x*mom.x + mom.y*mom.y + mom.z * mom.z)
+              tGen = atan(sqrt((mom.x*mom.x + mom.y*mom.y)) / mom.z) * 180.0 / pi
+              theMCPs[mcp.getPDG()] = dict(t=tGen, p=pGen, mcp=theMCP)
+        if not theMCPs:
+          print("no generator Muon found, skip")
+          continue
+
         tracks = event.get("SiTracks_Refitted")
         if len(tracks) > 1 and not isProd:
             print("More than one track!", counter)
@@ -88,26 +107,36 @@ def getHisto(aFile, basename, maxEvents=10000, nBins=100, pMax=50, pGen=40.0):
             if ts.location == 1:
               theTS = ts
           if not theTS:
-            print("No trackstate at IP found", counter)
-            continue
-          momentum, theta, charge = getMomentum(theTS, basename)
+             print("No trackstate at IP found", counter)
+             continue
+          momentum, theta, charge = getMomentum(theTS, basename, doBoost=False)
+          if charge > 0:
+              pGen = theMCPs[-13]["p"]
+              tGen = theMCPs[-13]["t"]
+          else:
+              pGen = theMCPs[13]["p"]
+              tGen = theMCPs[13]["t"]
+          #print(charge, momentum, pGen, (momentum - pGen) / pGen)
           if not momentum:
               continue
-          if not isProd:
-              hMom.Fill((momentum - pGen) / pGen)
-              hTheta.Fill((theta * 180 / pi)-89.0)
-          else:
+          # if not (35 < momentum and momentum < 45):
+          #     continue
+          hMom.Fill((momentum - pGen) / pGen)
+          hTheta.Fill((theta * 180 / pi) - tGen)
+          if isProd:
             if charge > 0:
-              hPlus.Fill(momentum)
+              hPlus.Fill((momentum - pGen) / pGen)
+              htp.Fill((theta * 180 / pi)-tGen)
             else:
-              hMinus.Fill(momentum)
+              hMinus.Fill((momentum - pGen) / pGen)
+              htm.Fill((theta * 180 / pi)-tGen)
 
     if isProd:
-      return [hPlus, hMinus], []
+      return [hMom, hPlus, hMinus], [hTheta, htp, htm]
     return [hMom], [hTheta]
 
 
-def getMomentum(theTS, basename):
+def getMomentum(theTS, basename, doBoost=True):
     """Get the momentum from the trackState"""
     omega = theTS.omega
     tanlambda = theTS.tanLambda
@@ -128,18 +157,20 @@ def getMomentum(theTS, basename):
     py = momentum * sin(phi0) * sin(theta)
     pz = momentum * cos(theta)
 
-    # now un boost
-    angle = -0.015
-    ta = tan(angle)
-    ta2 = ta * ta
-    gamma = sqrt(1.0 + ta2)
-    betagamma = ta
-    muMass = 0.1057 # GeV muon Mass
-    # e2 =  pxp * pxp + py * py + pz * pz + 
-    # px = betagamma * sqrt(e2) + gamma * pxp
-
-    e = sqrt(pxp * pxp + py * py + pz * pz + muMass*muMass)
-    px = pxp * gamma + e * betagamma
+    if doBoost:
+      # now un boost
+      angle = -0.015
+      ta = tan(angle)
+      ta2 = ta * ta
+      gamma = sqrt(1.0 + ta2)
+      betagamma = ta
+      muMass = 0.1057 # GeV muon Mass
+      # e2 =  pxp * pxp + py * py + pz * pz +
+      # px = betagamma * sqrt(e2) + gamma * pxp
+      e = sqrt(pxp * pxp + py * py + pz * pz + muMass*muMass)
+      px = pxp * gamma + e * betagamma
+    else:
+      px = pxp
 
     # un boost theta
     theta = atan( sqrt((px*px + py*py)) / pz)
